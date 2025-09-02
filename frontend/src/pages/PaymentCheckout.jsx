@@ -1,62 +1,225 @@
-import { api, USE_MOCK } from '../lib/api'
-import { mockCreateOrder, mockVerifyPayment } from '../lib/mock'
-import { useState } from 'react'
+// src/pages/PaymentCheckout.jsx
+import { api, USE_MOCK } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { loadPayPal } from "../utils/loadPayPal";
+
+const feesByBranch = {
+  "B.Tech CSE": 13.0,
+  "B.Tech IT": 12.0,
+  "B.Tech ECE": 12.0,
+  BBA: 90.0,
+  MBA: 15.0,
+};
 
 export default function PaymentCheckout() {
-  const [amount, setAmount] = useState(500) // INR
-  const [loading, setLoading] = useState(false)
+  const [branch, setBranch] = useState("");
+  const [amount, setAmount] = useState(0);
+  const [paypalLoaded, setPaypalLoaded] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [userInfo, setUserInfo] = useState(null);
+  const [appMeta, setAppMeta] = useState(null);
+  const paypalRef = useRef(null);
 
-  const pay = async () => {
-    setLoading(true)
-    try {
-      if (USE_MOCK) {
-        const order = await mockCreateOrder(amount * 100)
-        alert('Mock order created: ' + order.id)
-        await mockVerifyPayment()
-        alert('Payment verified (mock).')
-      } else {
-        // Backend order creation
-        const { data: order } = await api.post('/payments/order', { amount: amount * 100, applicationId: 'me' })
-        const opts = {
-          key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-          amount: order.amount,
-          currency: order.currency,
-          order_id: order.id,
-          name: 'College Admission Fee',
-          handler: async (response) => {
-            await api.post('/payments/verify', {
-              applicationId: 'me',
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature
-            })
-            alert('Payment verified!')
-          }
-        }
-        const rp = new window.Razorpay(opts)
-        rp.open()
+  // 1) Auth check
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get("/auth/me");
+        setUserInfo(res.data || {});
+      } catch {
+        setError("Please login first to make payment");
+      } finally {
+        setAuthChecked(true);
       }
-    } catch (e) {
-      console.error(e)
-      alert('Payment failed or cancelled.')
-    } finally {
-      setLoading(false)
+    })();
+  }, []);
+
+  // 2) Load current user's application meta
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!authChecked) return;
+        if (!userInfo) return;
+        const { data } = await api.get("/applications/me");
+        setAppMeta(data);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, [authChecked, userInfo]);
+
+  const isPaymentEnabled = !!appMeta?.fee?.isPaymentEnabled;
+
+  // 3) Branch change => amount + reset PayPal button
+  useEffect(() => {
+    setAmount(feesByBranch[branch] || 0);
+    setPaypalLoaded(false);
+    setError("");
+    if (paypalRef.current) paypalRef.current.innerHTML = "";
+  }, [branch]);
+
+  // 4) Load PayPal button (only if enabled)
+  useEffect(() => {
+    if (!isPaymentEnabled) return;
+    if (USE_MOCK || amount <= 0 || !authChecked || !userInfo) return;
+    if (paypalLoaded) return;
+
+    const clientId = import.meta.env.VITE_PAYPAL_CLIENT_ID;
+    if (!clientId) {
+      setError("PayPal configuration missing");
+      return;
     }
+
+    (async () => {
+      try {
+        setLoading(true);
+        setError("");
+
+        await loadPayPal(clientId, "USD");
+        if (!window.paypal) throw new Error("PayPal SDK failed to load!");
+
+        setPaypalLoaded(true);
+        if (paypalRef.current) paypalRef.current.innerHTML = "";
+
+        window.paypal
+          .Buttons({
+            createOrder: async () => {
+              try {
+                // ✅ backend endpoint: /api/payments/order
+                const { data } = await api.post("/payments/order", {
+                  amount,
+                  applicationId: "me",
+                  branch,
+                });
+                return data.id;
+              } catch (err) {
+                if (err.response) {
+                  if (err.response.status === 403) {
+                    setError(err.response.data?.message || "Payment not enabled yet");
+                    alert("Payment is not enabled by admin yet.");
+                  } else if (err.response.status === 404) {
+                    setError(err.response.data?.message || "Application not found");
+                  } else if (err.response.status === 401) {
+                    setError("Please login again to make payment.");
+                  } else {
+                    setError(err.response.data?.message || "Payment failed");
+                  }
+                } else if (err.request) {
+                  setError("Cannot connect to payment server. Is backend running?");
+                } else {
+                  setError(err.message || "Payment setup failed");
+                }
+                throw err;
+              }
+            },
+
+            onApprove: async (data) => {
+              try {
+                // ✅ backend endpoint: /api/payments/capture/:orderId
+                await api.post(`/payments/capture/${data.orderID}`, {
+                  applicationId: "me",
+                });
+                alert("✅ Payment successful & verified!");
+                setTimeout(() => window.location.replace("/application/status"), 1200);
+              } catch (err) {
+                const msg = err.response?.data?.message || "Payment verification failed";
+                setError(msg);
+                alert(`❌ ${msg}`);
+              }
+            },
+
+            onError: (err) => {
+              console.error("❌ PayPal Button Error:", err);
+              setError("PayPal payment failed. Please try again.");
+            },
+
+            onCancel: () => {
+              console.log("⚠️ Payment cancelled by user");
+              alert("Payment cancelled");
+            },
+          })
+          .render(paypalRef.current);
+      } catch (err) {
+        console.error("❌ PayPal setup error:", err);
+        setError(`PayPal setup failed: ${err.message}`);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [amount, paypalLoaded, authChecked, userInfo, branch, isPaymentEnabled]);
+
+  // UI
+  if (authChecked && !userInfo) {
+    return (
+      <div className="max-w-md mx-auto card p-6">
+        <div className="text-center py-8">
+          <h2 className="text-xl font-semibold text-red-600 mb-4">Authentication Required</h2>
+          <p className="text-gray-600 mb-4">Please login to your student account to make payment.</p>
+          <button
+            onClick={() => (window.location.href = "/auth/login")}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Go to Login
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="max-w-md mx-auto card p-6">
-      <h1 className="text-xl font-semibold">Application Fee Payment</h1>
-      <div className="mt-4">
-        <label className="label">Amount (INR)</label>
-        <input className="input" type="number" value={amount} onChange={e => setAmount(Number(e.target.value))} />
+      <h1 className="text-xl font-semibold mb-4">Application Fee Payment</h1>
+
+      {userInfo && (
+        <div className="mb-4 p-3 bg-green-50 rounded">
+          <p className="text-sm text-green-700">✅ Logged in</p>
+        </div>
+      )}
+
+      {!isPaymentEnabled && (
+        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-yellow-800">
+          Your application is under review. Payment will be enabled by admin after document verification.
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      <div className="mb-4">
+        <label className="label">Select Course/Branch</label>
+        <select
+          className="input"
+          value={branch}
+          onChange={(e) => setBranch(e.target.value)}
+        >
+          <option value="">-- Select Branch --</option>
+          {Object.keys(feesByBranch).map((key) => (
+            <option key={key} value={key}>
+              {key}
+            </option>
+          ))}
+        </select>
       </div>
-      <button className="btn-primary w-full mt-4" onClick={pay} disabled={loading}>
-        {loading ? 'Processing...' : 'Pay Now'}
-      </button>
-      <p className="text-xs text-gray-500 mt-3">
-        Note: For live payment, set <code>VITE_API_URL</code> and <code>VITE_RAZORPAY_KEY_ID</code> in <code>.env</code>.
-      </p>
+
+      <div className="mb-4">
+        <label className="label">Amount (USD)</label>
+        <input className="input" type="number" value={amount} readOnly />
+      </div>
+
+      {loading && (
+        <div className="text-center py-4">
+          <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+          <p className="mt-2 text-sm text-gray-600">Loading PayPal...</p>
+        </div>
+      )}
+
+      {/* Render PayPal button only if enabled */}
+      {isPaymentEnabled && amount > 0 && !error && <div className="mt-4" ref={paypalRef}></div>}
     </div>
-  )
+  );
 }

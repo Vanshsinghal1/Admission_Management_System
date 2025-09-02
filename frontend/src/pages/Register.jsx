@@ -1,18 +1,22 @@
 import { useForm } from 'react-hook-form'
 import { api, USE_MOCK } from '../lib/api'
 import { mockRegister } from '../lib/mock'
+import { useNavigate } from 'react-router-dom'
 
 export default function Register() {
   const { register, handleSubmit, formState: { isSubmitting } } = useForm()
+  const navigate = useNavigate()
 
   const onSubmit = async (values) => {
     try {
       if (USE_MOCK) {
         const res = await mockRegister(values)
         alert(res.message)
+        navigate('/auth/login') // ✅ register ke baad login page
       } else {
         const { data } = await api.post('/auth/register', values)
         alert(data.message)
+        navigate('/auth/login') // ✅ register ke baad login page
       }
     } catch (e) {
       alert(e?.response?.data?.message || 'Register failed')

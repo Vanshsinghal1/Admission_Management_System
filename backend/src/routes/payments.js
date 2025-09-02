@@ -1,38 +1,45 @@
-import { Router } from 'express'
-import Razorpay from 'razorpay'
-import crypto from 'crypto'
-import Application from '../models/Application.js'
-import { requireAuth } from '../middleware/auth.js'
+// backend/src/routes/payment.js
+import express from "express";
+import { requireAuth } from "../middleware/auth.js";
+import { createOrder, captureOrder } from "../controllers/paymentController.js";
+import paypal from "@paypal/checkout-server-sdk";
+import client from "../config/paypal.js";
 
-const r = Router()
+const r = express.Router();
 
-const enabled = process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
-const rp = enabled ? new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET }) : null
+// Student creates order
+r.post("/order", requireAuth(["student"]), createOrder);
 
-r.post('/order', requireAuth(['student']), async (req, res) => {
-  if (!enabled) return res.status(503).json({ message: 'Razorpay not configured' })
-  const { applicationId, amount } = req.body
-  const app = await Application.findById(applicationId)
-  if (!app) return res.status(404).json({ message: 'Application not found' })
-  const order = await rp.orders.create({ amount, currency: 'INR', receipt: String(app._id) })
-  app.fee = { amount: amount/100, currency: 'INR', status: 'processing', orderId: order.id }
-  await app.save()
-  res.json(order)
-})
+// Student captures payment (if needed)
+r.post("/capture/:orderId", requireAuth(["student"]), captureOrder);
 
-r.post('/verify', requireAuth(['student']), async (req, res) => {
-  if (!enabled) return res.status(503).json({ message: 'Razorpay not configured' })
-  const { applicationId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body
-  const body = `${razorpay_order_id}|${razorpay_payment_id}`
-  const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(body).digest('hex')
-  if (expected !== razorpay_signature) return res.status(400).json({ message: 'Signature mismatch' })
-  const app = await Application.findById(applicationId)
-  if (!app) return res.status(404).json({ message: 'Application not found' })
-  app.fee.status = 'paid'
-  app.fee.paymentId = razorpay_payment_id
-  app.status = 'under-review'
-  await app.save()
-  res.json({ message: 'Payment verified' })
-})
+// ✅ Success callback (PayPal return_url)
+r.get("/success", async (req, res) => {
+  const { token } = req.query; // PayPal orderId
+  if (!token) return res.status(400).send("Missing token");
 
-export default r
+  try {
+    const reqCap = new paypal.orders.OrdersCaptureRequest(token);
+    reqCap.requestBody({});
+    const capture = await client.execute(reqCap);
+
+    // TODO: Update DB fee status = "paid" using token
+    // Example:
+    // await Application.findOneAndUpdate(
+    //   { "fee.orderId": token },
+    //   { "fee.status": "paid", "fee.paymentId": capture.result.id }
+    // );
+
+    return res.redirect("http://localhost:5173/payment/success"); // 👈 frontend success page
+  } catch (err) {
+    console.error("PayPal Success Error:", err);
+    return res.redirect("http://localhost:5173/payment/failed");
+  }
+});
+
+// ❌ Cancel callback (PayPal cancel_url)
+r.get("/cancel", (req, res) => {
+  return res.redirect("http://localhost:5173/payment/cancelled");
+});
+
+export default r;

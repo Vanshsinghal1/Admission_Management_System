@@ -10,6 +10,9 @@ import paymentsRoutes from './src/routes/payments.js'
 import adminRoutes from './src/routes/admin.js'
 import idRoutes from './src/routes/id.js'
 
+
+
+
 const app = express()
 
 app.use(cors({
