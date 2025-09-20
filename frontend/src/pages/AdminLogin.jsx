@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../Context/AuthContext";
 
 export default function AdminLogin() {
   const { register, handleSubmit, formState: { isSubmitting } } = useForm();
