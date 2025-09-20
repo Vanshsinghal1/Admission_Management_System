@@ -1,6 +1,6 @@
 // src/components/NavBar.jsx
 import { Link, NavLink } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../Context/AuthContext";
 
 function NavItem({ to, end = false, children }) {
   return (
