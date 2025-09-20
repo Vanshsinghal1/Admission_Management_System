@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, USE_MOCK } from "../lib/api";
 import { mockAdminList } from "../lib/mock";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../Context/AuthContext";
 
 // ✅ Fix Cloudinary URLs for PDFs
 function fixCloudinaryDocUrl(url) {
